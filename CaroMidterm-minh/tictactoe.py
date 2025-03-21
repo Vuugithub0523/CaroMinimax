@@ -3,13 +3,7 @@ import sys
 import pygame
 import random
 import numpy as np
-import subprocess  # Import subprocess module
 from constants import *
-from menuGame import create_menu_window 
-
-# Function to run menuGame.py
-def run_menu_game():
-    subprocess.run(["python", "menuGame.py"])
 
 # --- PYGAME SETUP ---
 pygame.init()
@@ -32,7 +26,6 @@ class Board:
             @return 2 if player 2 wins
         '''
         # For 10x10 board, we'll check for 5 in a row to win
-        # (common rule for larger boards)
         win_length = 5
 
         # Check vertical wins
@@ -113,8 +106,10 @@ class AI:
     # --- RANDOM ---
     def rnd(self, board):
         empty_sqrs = board.get_empty_sqrs()
-        idx = random.randrange(0, len(empty_sqrs))
-        return empty_sqrs[idx]  # (row, col)
+        if empty_sqrs:  # Make sure there are empty squares
+            idx = random.randrange(0, len(empty_sqrs))
+            return empty_sqrs[idx]  # (row, col)
+        return None  # Return None if no empty squares (shouldn't happen)
 
     # --- EVALUATION FUNCTION ---
     def evaluate_board(self, board):
@@ -122,9 +117,9 @@ class AI:
         
         # Terminal states
         final_state = board.final_state()
-        if final_state == 1:  # AI wins
+        if final_state == self.player:  # AI wins
             return 10000
-        elif final_state == 2:  # Human wins
+        elif final_state == self.opponent:  # Human wins
             return -10000
         elif board.isfull():  # Draw
             return 0
@@ -177,6 +172,10 @@ class AI:
         human_count = window.count(self.opponent)
         empty_count = window.count(0)
         
+        # Ensure no mixed pieces (both AI and human in the same window)
+        if ai_count > 0 and human_count > 0:
+            return 0  # Window is blocked
+        
         # Calculate score based on piece configuration
         if ai_count == win_length:
             return 1000  # Immediate win
@@ -217,12 +216,14 @@ class AI:
             return 0, None
         
         # For 10x10 board, we need to be more selective about moves to consider
-        # otherwise minimax will be too slow
         empty_sqrs = self.get_strategic_moves(board)
+        
+        if not empty_sqrs:  # Safety check
+            return 0, None
         
         if maximizing:
             max_eval = -float('inf')
-            best_move = None
+            best_move = empty_sqrs[0]  # Default to first move
             
             for (row, col) in empty_sqrs:
                 temp_board = copy.deepcopy(board)
@@ -241,7 +242,7 @@ class AI:
         
         else:
             min_eval = float('inf')
-            best_move = None
+            best_move = empty_sqrs[0]  # Default to first move
             
             for (row, col) in empty_sqrs:
                 temp_board = copy.deepcopy(board)
@@ -261,6 +262,11 @@ class AI:
     def get_strategic_moves(self, board):
         """Get a list of strategic moves to consider instead of all empty squares"""
         empty_sqrs = board.get_empty_sqrs()
+        
+        # If the board is empty or nearly empty, just play near the center
+        if board.isempty() or board.marked_sqrs < 3:
+            return [(r, c) for r in range(3, 7) for c in range(3, 7) 
+                    if (r, c) in empty_sqrs][:5]
         
         # For a 10x10 board, we can't consider all empty squares in minimax
         # We'll focus on squares that are adjacent to already occupied squares
@@ -284,8 +290,7 @@ class AI:
             if is_adjacent:
                 strategic_moves.append((row, col))
         
-        # If no strategic moves found (e.g., at the start of the game)
-        # or if we have too few options, add some default moves
+        # If no strategic moves found or if we have too few options, add some default moves
         if len(strategic_moves) < 5:
             # Add center positions
             center_moves = [(r, c) for r in range(3, 7) for c in range(3, 7) 
@@ -297,9 +302,9 @@ class AI:
                 remaining = [move for move in empty_sqrs if move not in strategic_moves]
                 strategic_moves.extend(remaining[:5])
         
-        # Limit to 15 moves maximum to keep calculation time reasonable
-        if len(strategic_moves) > 15:
-            strategic_moves = strategic_moves[:15]
+        # Limit to 10 moves maximum to keep calculation time reasonable
+        if len(strategic_moves) > 10:
+            strategic_moves = strategic_moves[:10]
             
         return strategic_moves
     
@@ -313,43 +318,60 @@ class AI:
         return None
     
     # --- MAIN EVAL ---
-    def eval(self, main_board, max_depth):
+    def eval(self, main_board, max_depth=2):
+        if main_board.isempty():
+            # If board is empty, choose a position in the center area
+            return random.randint(3, 6), random.randint(3, 6)
+            
         if self.level == 0:
             # Random choice
-            eval = 'random'
             move = self.rnd(main_board)
+            if move is None:  # Safety check
+                # If no empty squares, just return something (shouldn't happen)
+                print("Warning: No empty squares found for random move")
+                return 0, 0
+            return move
         else:
-            # Check for immediate win
-            win_move = self.find_winning_move(main_board, self.player)
-            if win_move:
-                return win_move
+            try:
+                # Check for immediate win
+                win_move = self.find_winning_move(main_board, self.player)
+                if win_move:
+                    return win_move
+                    
+                # Check for immediate block
+                block_move = self.find_winning_move(main_board, self.opponent)
+                if block_move:
+                    return block_move
                 
-            # Check for immediate block
-            block_move = self.find_winning_move(main_board, self.opponent)
-            if block_move:
-                return block_move
+                # Limit depth to keep calculation time reasonable
+                adjusted_depth = min(max_depth, 2)
+                
+                # Use minimax for strategic play
+                _, move = self.minimax(main_board, True, depth=0, max_depth=adjusted_depth)
+                
+                # Safety check in case minimax returns None
+                if move is None:
+                    print("Warning: Minimax returned None")
+                    return self.rnd(main_board)
+                    
+                return move  # row, col
             
-            # For 10x10 board, we need to be more careful about depth
-            # to avoid excessively long calculation times
-            adjusted_depth = min(max_depth, 3)  # Limit depth to 3 for 10x10 board
-            
-            # Use minimax for strategic play
-            _, move = self.minimax(main_board, True, depth=0, max_depth=adjusted_depth)
-            eval = 'minimax'
-        
-        print(f'AI has chosen to mark the square in pos {move} with an eval of: {eval}')
-        return move  # row, col
+            except Exception as e:
+                print(f"Error in AI eval: {e}")
+                # Fall back to random move if minimax fails
+                return self.rnd(main_board)
 
 class Game:
     def __init__(self):
         self.board = Board()
         self.ai = AI()
         self.player = 1   # 1-cross  # 2-circles
-        self.gamemode = 'ai'  # pvp or ai
+        self.gamemode = 'pvp'  # Default to pvp
         self.running = True
         self.show_lines()
         self.turn_count = 0  # Total turns played
         self.player_moves = 0  # Number of player moves
+        self.human_piece = 1  # Default human plays as X (1)
 
     # --- DRAW METHODS ---
     def show_lines(self):
@@ -389,7 +411,7 @@ class Game:
         # Switch player
         self.player = self.player % 2 + 1
         self.turn_count += 1  # Increment total turns
-        if current_player == 1:  # If human player just moved
+        if current_player == self.human_piece:  # If human player just moved
             self.player_moves += 1  # Increment player moves count
 
     def change_gamemode(self, gamemode):
@@ -403,85 +425,194 @@ class Game:
 
     def set_player_piece(self, piece):
         """Set whether the human player is X (1) or O (2)"""
-        self.player = piece  # Start with this piece
+        self.human_piece = piece
         # Set AI to use the opposite piece
         self.ai.player = 2 if piece == 1 else 1
         self.ai.opponent = piece
 
+class Menu:
+    def __init__(self, game):
+        self.game = game
+        
+    def run(self):
+        import tkinter as tk
+        
+        root = tk.Tk()
+        root.title("Game Menu")
+        root.geometry("500x500")
+        root.config(bg="#FFEB3B")
+        
+        # Title
+        title_label = tk.Label(root, text="Game Menu", font=("Arial", 30, "bold"), bg="#FFEB3B", fg="darkblue")
+        title_label.pack(pady=30)
+        
+        # Button style functions
+        def on_enter(e):
+            e.widget.config(bg="#4CAF50", fg="white", font=("Arial", 16, "bold"))
+        
+        def on_leave(e):
+            e.widget.config(bg="#f1f1f1", fg="black", font=("Arial", 16))
+        
+        # PvP Button
+        def select_pvp():
+            self.game.change_gamemode('pvp')
+            root.destroy()
+        
+        pvp_button = tk.Button(
+            root, 
+            text="Chơi với người", 
+            width=25, 
+            height=3, 
+            font=("Arial", 16), 
+            bg="#f1f1f1", 
+            fg="black", 
+            relief="flat", 
+            bd=0, 
+            command=select_pvp
+        )
+        pvp_button.pack(pady=15)
+        pvp_button.bind("<Enter>", on_enter)
+        pvp_button.bind("<Leave>", on_leave)
+        
+        # AI Button
+        def select_ai():
+            self.game.change_gamemode('ai')
+            root.destroy()
+            
+        ai_button = tk.Button(
+            root, 
+            text="Chơi với máy", 
+            width=25, 
+            height=3, 
+            font=("Arial", 16), 
+            bg="#f1f1f1", 
+            fg="black", 
+            relief="flat", 
+            bd=0, 
+            command=select_ai
+        )
+        ai_button.pack(pady=15)
+        ai_button.bind("<Enter>", on_enter)
+        ai_button.bind("<Leave>", on_leave)
+        
+        # Exit Button
+        def exit_game():
+            root.destroy()
+            pygame.quit()
+            sys.exit()
+            
+        exit_button = tk.Button(
+            root, 
+            text="Thoát", 
+            width=25, 
+            height=3, 
+            font=("Arial", 16), 
+            bg="#f1f1f1", 
+            fg="black", 
+            relief="flat", 
+            bd=0, 
+            command=exit_game
+        )
+        exit_button.pack(pady=15)
+        exit_button.bind("<Enter>", on_enter)
+        exit_button.bind("<Leave>", on_leave)
+        
+        root.mainloop()
+
 def main():
-    # --- OBJECTS ---
+    # Initialize game
     game = Game()
     board = game.board
     ai = game.ai
-
-    # Setup the player's piece
-    # Create a menu here or add a way to select X or O
-    # For now, default to X (1)
-    human_piece = 1  # X
-    game.set_player_piece(human_piece)
     
-    create_menu_window(game)
+    # Show menu
+    menu = Menu(game)
+    menu.run()
     
-    # --- MAINLOOP ---
+    # After menu selection, ensure the screen is properly set up
+    screen.fill(BG_COLOR)
+    game.show_lines()
+    pygame.display.update()
+    
+    # Main game loop
     while True:
-        # pygame events
+        # Event handling
         for event in pygame.event.get():
-            # quit event
+            # Quit event
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
 
-            # keydown event
+            # Key events
             if event.type == pygame.KEYDOWN:
                 # r-restart the game
                 if event.key == pygame.K_r:
                     game.reset()
-                    game.set_player_piece(human_piece)  # Reset player piece after restart
-
+                
+                # g-change gamemode
+                if event.key == pygame.K_g:
+                    game.change_gamemode('pvp' if game.gamemode == 'ai' else 'ai')
+                    
                 # Change AI difficulty
                 if event.key == pygame.K_0:
                     ai.level = 0
                 elif event.key == pygame.K_1:
                     ai.level = 1
                     
-                # Switch player piece for testing
+                # Change player piece
                 if event.key == pygame.K_x:
-                    human_piece = 1  # X
                     game.reset()
-                    game.set_player_piece(human_piece)
+                    game.set_player_piece(1)  # X
                 elif event.key == pygame.K_o:
-                    human_piece = 2  # O
                     game.reset()
-                    game.set_player_piece(human_piece)
+                    game.set_player_piece(2)  # O
 
-            # click event to make a move
-            if event.type == pygame.MOUSEBUTTONDOWN:
+            # Mouse click event
+            if event.type == pygame.MOUSEBUTTONDOWN and game.running:
                 pos = event.pos
                 row, col = pos[1] // SQSIZE, pos[0] // SQSIZE
                 
                 # Ensure the click is within the board boundaries
                 if 0 <= row < 10 and 0 <= col < 10:
                     # Only allow player to move if it's their turn
-                    if game.player == human_piece and board.empty_sqr(row, col) and game.running:
+                    if game.player == game.human_piece and board.empty_sqr(row, col):
                         game.make_move(row, col)
-
+                        
+                        # Check if game is over after player move
                         if game.isover():
                             game.running = False
 
         # AI turn
         if game.gamemode == 'ai' and game.player == ai.player and game.running:
-            pygame.display.update()
-
-            # For 10x10 board, we need to be more careful with depth
-            # to avoid excessively long calculation times
-            max_depth = min(2 + (game.player_moves // 4), 3)
-
-            print("max_depth: ", max_depth)
-            row, col = ai.eval(board, max_depth)
-            game.make_move(row, col)
-
-            if game.isover():
-                game.running = False
+            # Simple delay to make AI move visible
+            pygame.time.delay(300)
+            
+            try:
+                # Calculate move with limited depth based on game progress
+                max_depth = 2  # Keep max_depth low for better performance
+                row, col = ai.eval(board, max_depth)
+                
+                # Verify move is valid before making it
+                if 0 <= row < 10 and 0 <= col < 10 and board.empty_sqr(row, col):
+                    game.make_move(row, col)
+                    
+                    # Check if game is over after AI move
+                    if game.isover():
+                        game.running = False
+                else:
+                    print(f"Invalid AI move: ({row}, {col})")
+                    # Choose random valid move as fallback
+                    valid_moves = board.get_empty_sqrs()
+                    if valid_moves:
+                        row, col = random.choice(valid_moves)
+                        game.make_move(row, col)
+            except Exception as e:
+                print(f"Error during AI turn: {e}")
+                # Choose random valid move as fallback
+                valid_moves = board.get_empty_sqrs()
+                if valid_moves:
+                    row, col = random.choice(valid_moves)
+                    game.make_move(row, col)
 
         pygame.display.update()
 
